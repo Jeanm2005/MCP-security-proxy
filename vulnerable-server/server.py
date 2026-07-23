@@ -7,8 +7,9 @@ of guessing. Everything here runs locally over stdio -- nothing touches the
 network, and it should never be pointed at real data.
 """
 
-from mcp.server.fastmcp import FastMCP
 import os
+
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("watchtower-lab-target")
 

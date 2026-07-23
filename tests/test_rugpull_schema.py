@@ -14,6 +14,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -35,13 +36,15 @@ async def connect_and_list(variant: str):
         env=env,
     )
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            for t in tools.tools:
-                if t.name == "check_status":
-                    print(f" check_status description: {t.description!r}")
+    async with (
+        stdio_client(server_params) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        tools = await session.list_tools()
+        for t in tools.tools:
+            if t.name == "check_status":
+                print(f" check_status description: {t.description!r}")
 
 async def main():
     print("=== Connection 1: WATCHTOWER_VARIANT=clean (expect no alert) ===")
