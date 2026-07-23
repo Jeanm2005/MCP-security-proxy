@@ -9,14 +9,19 @@ Usage:
 """
 import os
 import sys
+
 import anyio
-import mcp.types as types
-from mcp import ClientSession, StdioServerParameters
+from detectors import scan_text
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from detectors import scan_text
-from storage import init_db, check_and_update_fingerprint, log_call, log_description_findings
+from storage import (
+    check_and_update_fingerprint,
+    init_db,
+    log_call,
+    log_description_findings,
+)
 
 proxy = Server("mcp-watchtower-proxy")
 _upstream: ClientSession | None = None
@@ -89,18 +94,20 @@ async def main() -> None:
     global _upstream
     server_params = StdioServerParameters(command=upstream_cmd, args=upstream_args, env=dict(os.environ))
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            _upstream = session
-            print("[watchtower] connected to upstream MCP server", file=sys.stderr)
+    async with (
+        stdio_client(server_params) as (read, write),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        _upstream = session
+        print("[watchtower] connected to upstream MCP server", file=sys.stderr)
 
-            async with stdio_server() as (proxy_read, proxy_write):
-                await proxy.run(
-                    proxy_read,
-                    proxy_write,
-                    proxy.create_initialization_options(),
-                )
+        async with stdio_server() as (proxy_read, proxy_write):
+            await proxy.run(
+                proxy_read,
+                proxy_write,
+                proxy.create_initialization_options(),
+            )
 
 if __name__ == "__main__":
     anyio.run(main)
