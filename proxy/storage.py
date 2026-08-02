@@ -49,6 +49,16 @@ def init_db() -> None:
             findings        TEXT NOT NULL,
             timestamp       REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name       TEXT NOT NULL,
+            arguments       TEXT NOT NULL,
+            reason          TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            requested_at    TEXT NOT NULL,
+            decided_at      REAL
+        );
         """
     )
     conn.commit()
@@ -139,3 +149,45 @@ def log_description_findings(tool_name: str, description: str, findings: list[di
     )
     conn.commit()
     conn.close()
+
+def create_pending_approval(tool_name: str, arguments: dict, reason: dict) -> int:
+    """Creates a pending approval row and returns its id."""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO pending_approvals (tool_name, arguments, reason, status, requested_at) "
+        "VALUES (?, ?, ?, 'pending', ?)",
+        (tool_name, json.dumps(arguments), reason, time.time()),
+    )
+    conn.commit()
+    approval_id = cur.lastrowid
+    conn.close()
+    return approval_id
+
+def get_approval_status(approval_id: int) -> str:
+    """Returns 'pending', 'approved', or 'denied'."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT status FROM pending_approvals WHERE id = ?", (approval_id,)
+    ).fetchone()
+    conn.close()
+    return row["status"] if row else "denied"
+
+def set_approval_decision(approval_id: int, decision: str) -> None:
+    """Decision must be 'approved' or 'denied'."""
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE pending_approvals SET status = ?, decided_at = ? WHERE id = ?",
+        (decision, time.time(), approval_id),
+    )
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
+
+def list_pending_approvals() -> list[sqlite3.Row]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM pending_approvals WHERE status = 'pending' ORDER BY requested_at"
+    ).fetchall()
+    conn.close()
+    return rows
