@@ -1,0 +1,10 @@
+default: allow
+
+rules:
+  lookup_user:
+    action: require_approval
+    reason: "Returns internal user data; needs a human OK per call."
+
+  export_credentials:
+    action: deny
+    reason: "This tool should never exist in a legitimate server. Hard block."
