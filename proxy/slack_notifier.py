@@ -26,5 +26,5 @@ def send_slack_message(text: str) -> None:
     )
     try:
         urllib.request.urlopen(req, timeout=5)
-    except Exception as e:
+    except Exception as e: # noqa: BLE001 -- intentionally broad: a failed Slack notification should never crash the proxy
         print(f"[watchtower] Slack notify failed: {e}", file=sys.stderr)

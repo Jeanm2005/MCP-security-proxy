@@ -4,6 +4,7 @@ call before it's forwarded to the real server.
 """
 
 from pathlib import Path
+
 import yaml
 
 POLICY_PATH = Path(__file__).parent / "policy.yaml"

@@ -10,22 +10,22 @@ Usage:
 import asyncio
 import os
 import sys
+
 import anyio
 from detectors import scan_text
-from policy import get_action, load_policy
-from slack_notifier import send_slack_message
-from mcp import ClientSession, StdioServerParameters
-import mcp.types as types
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+from policy import get_action, load_policy
+from slack_notifier import send_slack_message
 from storage import (
     check_and_update_fingerprint,
+    create_pending_approval,
+    get_approval_status,
     init_db,
     log_call,
     log_description_findings,
-    create_pending_approval,
-    get_approval_status,
 )
 
 proxy = Server("mcp-watchtower-proxy")
