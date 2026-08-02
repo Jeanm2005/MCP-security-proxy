@@ -29,9 +29,13 @@ jobs:
               run: python tests/smoke_test.py
 
             - name: Run end-to-end proxy test
+              env:
+                WATCHTOWER_CI_AUTO_APPROVE: "true"
               run: python tests/test_proxy_e2e.py
 
             - name: Run rug-pull schema-change test
+              env:
+                WATCHTOWER_CI_AUTO_APPROVE: "true"
               run: python tests/test_rugpull_schema.py
 
             - name: Verify detection actually fired (fail build if not)
