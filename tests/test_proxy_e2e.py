@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ async def main():
             str(REPO_ROOT / "vulnerable-server" / "server.py"),
         ],
         cwd=str(REPO_ROOT / "proxy"),
+        env=dict(os.environ),
     )
 
     async with (
