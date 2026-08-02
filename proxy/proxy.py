@@ -72,7 +72,7 @@ async def _wait_for_approval(approval_id: int, tool_name: str) -> bool:
     """
     if os.environ.get("WATCHTOWER_CI_AUTO_APPROVE") == "true":
         _alert(f"[TEST MODE] auto-approving #{approval_id} for '{tool_name}' -- WATCHTOWER_CI_AUTO_APPROVE is set")
-        _set_approval_decision(approval_id, "approved")
+        set_approval_decision(approval_id, "approved")
         return True
 
     elapsed = 0
@@ -88,6 +88,20 @@ async def _wait_for_approval(approval_id: int, tool_name: str) -> bool:
 
     _alert(f"Approval request #{approval_id} for '{tool_name}' timed out after {APPROVAL_TIMEOUT_SECONDS} seconds. Denying by default.")
     return False
+
+def _denied_result(reason: str) -> types.CallToolResult:
+    """Builds a synthetic CallToolResult for calls blocked by policy -- 
+    denied outright or denied/timed-out after an approval request.
+    """
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=f"[WATCHTOWER] Blocked: {reason}")],
+        isError=True,
+    )
+
+def _alert(message: str) -> None:
+    """v1 alerting: stderr + Slack (if configured)."""
+    print(f"\n[WATCHTOWER ALERT] {message}\n", file=sys.stderr, flush=True)
+    send_slack_message(f":rotating_light: *Watchtower* {message}")
 
 @proxy.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
