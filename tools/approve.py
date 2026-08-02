@@ -22,11 +22,12 @@ def main() -> None:
         return
 
     if sys.argv[1] == "list":
-        updated = set_approval_decision(approval_id, "approved" if decision == "approve" else "denied")
-        if updated:
-            print(f"Approval #{approval_id} marked as {decision}d.")
-        else:
-            print(f"No pending approval found with id #{approval_id}.")
+        rows = list_pending_approvals()
+        if not rows:
+            print("No pending approvals.")
+        for row in rows:
+            print(f"#{row['id']} {row['tool_name']} (args={row['arguments']}) requested at {row['requested_at']}, reason: {row['reason']}")
+        return
 
     approval_id = int(sys.argv[1])
     decision = sys.argv[2]
@@ -34,8 +35,11 @@ def main() -> None:
         print("decision must be 'approve' or 'deny'")
         return
 
-    set_approval_decision(approval_id, "approved" if decision == "approve" else "denied")
-    print(f"Approval #{approval_id} marked as {decision}d.")
+    updated = set_approval_decision(approval_id, "approved" if decision == "approve" else "denied")
+    if updated:
+        print(f"Approval #{approval_id} {decision}d.")
+    else:
+        print(f"Approval #{approval_id} not found or already decided.")
 
 if __name__ == "__main__":
     main()
