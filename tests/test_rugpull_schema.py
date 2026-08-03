@@ -26,12 +26,7 @@ async def connect_and_list(variant: str):
 
     server_params = StdioServerParameters(
         command=sys.executable,
-        args = [
-            "proxy.py",
-            "--",
-            sys.executable,
-            str(REPO_ROOT / "vulnerable-server" / "server.py"),
-        ],
+        args = ["proxy.py"],
         cwd=str(REPO_ROOT / "proxy"),
         env=env,
     )

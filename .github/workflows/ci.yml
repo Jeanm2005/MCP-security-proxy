@@ -38,6 +38,10 @@ jobs:
                 WATCHTOWER_CI_AUTO_APPROVE: "true"
               run: python tests/test_rugpull_schema.py
 
+            - name: Run cascade detection test
+              env:
+                  WATCHTOWER_CI_AUTO_APPROVE: "true"
+              run: python tests/test_cascade.py
             - name: Verify detection actually fired (fail build if not)
               run: |
                 python -c "
@@ -46,8 +50,10 @@ jobs:
                 flagged_calls = conn.execute('SELECT COUNT(*) FROM calls WHERE flags IS NOT NULL').fetchone()[0]
                 desc_findings = conn.execute('SELECT COUNT(*) FROM description_findings').fetchone()[0]
                 rug_pulls = conn.execute(\"SELECT COUNT(*) FROM tool_fingerprints WHERE last_flag = 'rug_pull'\").fetchone()[0]
+                cascade_findings = conn.execute('SELECT COUNT(*) FROM cascade_findings').fetchone()[0]
                 assert flagged_calls > 0, 'expected at least one flagged call, found none'
                 assert desc_findings > 0, 'expected at least one description finding, found none'
                 assert rug_pulls > 0, 'expected at least one rug-pull detection, found none'
-                print(f'OK: {flagged_calls} flagged calls, {desc_findings} description findings, {rug_pulls} rug pulls')
+                assert cascade_findings > 0, 'expected at least one cascade finding, found none'
+                print(f'OK: {flagged_calls} flagged calls, {desc_findings} description findings, {rug_pulls} rug pulls, {cascade_findings} cascade findings')
                 "

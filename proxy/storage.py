@@ -50,6 +50,16 @@ def init_db() -> None:
             timestamp       REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS cascade_findings (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_server   TEXT NOT NULL,
+            source_tool     TEXT NOT NULL,
+            dest_server     TEXT NOT NULL,
+            dest_tool       TEXT NOT NULL,
+            matched_value   TEXT NOT NULL,
+            timestamp       REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS pending_approvals (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             tool_name       TEXT NOT NULL,
@@ -146,6 +156,16 @@ def log_description_findings(tool_name: str, description: str, findings: list[di
         "INSERT INTO description_findings (tool_name, description, findings, timestamp) "
         "VALUES (?, ?, ?, ?)",
         (tool_name, description, json.dumps(findings), time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+def log_cascade_findings(source_server, source_tool, dest_server, dest_tool, matched_value):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO cascade_findings (source_server, source_tool, dest_server, dest_tool, matched_value, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (source_server, source_tool, dest_server, dest_tool, matched_value, time.time()),
     )
     conn.commit()
     conn.close()
