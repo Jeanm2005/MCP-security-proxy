@@ -31,7 +31,7 @@ async def main():
 
         print("=== lookup_user x5 (expect alerts to start at call #4) ===")
         for i in range(5):
-            r = await session.call_tool("lookup_user", {"username": "jdoe"})
+            r = await session.call_tool("filesrv__lookup_user", {"username": "jdoe"})
             print(f"  call #{i+1}: {r.content[0].text}")
 
 

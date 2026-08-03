@@ -9,19 +9,20 @@ cross-server cascade detection possible.
 Usage:
     python proxy.py -- python ../vulnerable-server/server.py
 """
-
 import asyncio
 import os
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
+
 import anyio
 import yaml
+from cascade import check_for_cascade, record_output
+from detectors import scan_text
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
-from detectors import scan_text
 from policy import get_action, load_policy
 from slack_notifier import send_slack_message
 from storage import (
@@ -30,6 +31,7 @@ from storage import (
     get_approval_status,
     init_db,
     log_call,
+    log_cascade_findings,
     log_description_findings,
     set_approval_decision,
 )
@@ -127,6 +129,19 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
         if not approved:
             return _denied_result(f"tool '{name}' call denied by approval process.")
 
+    cascade = check_for_cascade(server_name, original_name, arguments)
+    if cascade:
+        _alert(
+            f"CASCADE ALERT: output from '{cascade['source_server']}__{cascade['source_tool']}' "
+            f"showed up as input to '{name}'. This looks like data crossing a server "
+            f"boundary it was never meant to cross.\n"
+            f"  Matched value: {cascade['matched_value']!r}"
+        )
+        log_cascade_findings(
+            cascade["source_server"], cascade["source_tool"],
+            cascade["dest_server"], cascade["dest_tool"], cascade["matched_value"],
+        )
+
     session = _upstreams[server_name]
     result = await session.call_tool(original_name, arguments)
 
@@ -143,13 +158,15 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
         )
 
     log_call(name, arguments, response_text, findings)
+    record_output(server_name, original_name, response_text)
 
     return result
 
-async def main() -> None:
+def _load_servers_config() -> dict:
     with open(SERVERS_CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+        return yaml.safe_load(f)
 
+async def main(config: dict) -> None:
     init_db()
 
     global _policy
@@ -173,4 +190,5 @@ async def main() -> None:
             )
 
 if __name__ == "__main__":
-    asyncio.run(main)
+    config = _load_servers_config()
+    anyio.run(main, config)
