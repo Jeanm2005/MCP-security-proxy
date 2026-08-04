@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -11,13 +12,9 @@ REPO_ROOT = Path(__file__).parent.parent
 async def main():
     server_params = StdioServerParameters(
         command=sys.executable,
-        args=[
-            "proxy.py",
-            "--",
-            sys.executable,
-            str(REPO_ROOT / "vulnerable-server" / "server.py"),
-        ],
+        args=["proxy.py"],
         cwd=str(REPO_ROOT / "proxy"),
+        env=dict(os.environ),
     )
 
     async with (
@@ -34,7 +31,7 @@ async def main():
 
         print("=== lookup_user x5 (expect alerts to start at call #4) ===")
         for i in range(5):
-            r = await session.call_tool("lookup_user", {"username": "jdoe"})
+            r = await session.call_tool("filesrv__lookup_user", {"username": "jdoe"})
             print(f"  call #{i+1}: {r.content[0].text}")
 
 

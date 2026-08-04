@@ -26,12 +26,7 @@ async def connect_and_list(variant: str):
 
     server_params = StdioServerParameters(
         command=sys.executable,
-        args = [
-            "proxy.py",
-            "--",
-            sys.executable,
-            str(REPO_ROOT / "vulnerable-server" / "server.py"),
-        ],
+        args = ["proxy.py"],
         cwd=str(REPO_ROOT / "proxy"),
         env=env,
     )
@@ -43,7 +38,7 @@ async def connect_and_list(variant: str):
         await session.initialize()
         tools = await session.list_tools()
         for t in tools.tools:
-            if t.name == "check_status":
+            if t.name == "filesrv_check_status":
                 print(f" check_status description: {t.description!r}")
 
 async def main():
