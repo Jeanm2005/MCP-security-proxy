@@ -1,0 +1,53 @@
+# Brings up the whole Watchtower stack with one command: filesrv, mailsrv,
+# and the proxy, all talking to each other over a private Docker network
+# using service names as hostnames (Compose's built-in DNS) instead of
+# localhost/127.0.0.1, which only works because they're on the same
+# machine today.
+#
+# Usage:
+#   docker compose up --build
+#   docker compose down          (stop everything)
+#   docker compose logs -f proxy (tail just the proxy's logs)
+
+services:
+  filesrv:
+    build: .
+    command: python vulnerable-server/server.py
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8001"
+      WATCHTOWER_VARIAT: "clean"
+    networks:
+      - watchtower-net
+
+  mailsrv:
+    build: .
+    command: python lab-server-b/mailserver.py
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8002"
+    networks:
+      - watchtower-net
+
+  proxy:
+    build: .
+    command: python proxy/proxy.py
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      WATCHTOWER_DB_PATH: "/app/data/watchtower.db"
+    ports:
+      - "8000:8000"
+    volumes:
+      - watchtower-db:/app/data
+    depends_on:
+      - filesrv
+      - mailsrv
+    networks:
+      - watchtower-net
+
+networks:
+  watchtower-net:
+
+volumes:
+  watchtower-db:

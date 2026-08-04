@@ -1,14 +1,13 @@
 """
 Watchtower proxy -- multi-server aggregator.
 
-Connects to multiple upstream MCP servers, merge their tools into
-one list, and routes each call to the right backend. Every call from
-every server funnels through this one process, which is what makes
+Connects to multiple upstream MCP servers (defined in server.yaml),
+merges their tools into one list (prefixed as "servername__toolname" to
+avoid collisions), and routes each call to the right backend. Every call
+from every server funnels through this one process, which is what makes
 cross-server cascade detection possible.
-
-Usage:
-    python proxy.py -- python ../vulnerable-server/server.py
 """
+
 import asyncio
 import os
 import sys
@@ -16,15 +15,18 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 import anyio
+import uvicorn
 import yaml
 from cascade import check_for_cascade, record_output
 from detectors import scan_text
-from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession, types
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.server.lowlevel import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from policy import get_action, load_policy
 from slack_notifier import send_slack_message
+from starlette.applications import Starlette
+from starlette.routing import Route
 from storage import (
     check_and_update_fingerprint,
     create_pending_approval,
@@ -46,17 +48,20 @@ _tool_routes: dict[str, tuple[str, str]] = {}
 _policy: dict = {}
 
 APPROVAL_POLL_INTERVAL_SECONDS = 2
-APPROVAL_TIMEOUT_SECONDS = int(os.environ.get("APPROVAL_TIMEOUT_SECONDS", "300"))  # default: 5 minutes
+APPROVAL_TIMEOUT_SECONDS = int(os.environ.get("WATCHTOWER_APPROVAL_TIMEOUT", "300"))
+
 
 def _alert(message: str) -> None:
     print(f"\n[WATCHTOWER ALERT] {message}\n", file=sys.stderr, flush=True)
     send_slack_message(f":rotating_light: *Watchtower* {message}")
+
 
 def _denied_result(message: str) -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=f"[Watchtower] Blocked: {message}")],
         isError=True,
     )
+
 
 @proxy.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
@@ -87,6 +92,7 @@ async def handle_list_tools() -> list[types.Tool]:
 
     return merged
 
+
 async def _wait_for_approval(approval_id: int, tool_name: str) -> bool:
     if os.environ.get("WATCHTOWER_CI_AUTO_APPROVE") == "true":
         _alert(f"[TEST MODE] auto-approving #{approval_id} for '{tool_name}'")
@@ -98,20 +104,22 @@ async def _wait_for_approval(approval_id: int, tool_name: str) -> bool:
         status = get_approval_status(approval_id)
         if status == "approved":
             return True
-        elif status == "denied":
+        if status == "denied":
             return False
         await asyncio.sleep(APPROVAL_POLL_INTERVAL_SECONDS)
         elapsed += APPROVAL_POLL_INTERVAL_SECONDS
 
-    _alert(f"Approval request #{approval_id} for '{tool_name}' timed out after {APPROVAL_TIMEOUT_SECONDS} seconds. Denying by default.")
+    _alert(f"Approval request #{approval_id} for '{tool_name}' timed out -- denying by default.")
     return False
+
 
 @proxy.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
     if name not in _tool_routes:
-        return _denied_result(f"Tool '{name}' not in any connected server's tool list.")
+        return _denied_result(f"unknown tool '{name}' -- not in any connected server's tool list")
 
     server_name, original_name = _tool_routes[name]
+
     action, reason = get_action(original_name, _policy)
 
     if action == "deny":
@@ -127,7 +135,7 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
         )
         approved = await _wait_for_approval(approval_id, name)
         if not approved:
-            return _denied_result(f"tool '{name}' call denied by approval process.")
+            return _denied_result(f"tool '{name}' approval #{approval_id} was denied or timed out")
 
     cascade = check_for_cascade(server_name, original_name, arguments)
     if cascade:
@@ -162,9 +170,25 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
 
     return result
 
+
+class _MCPASGIApp:
+    """Thin ASGI wrapper delegating every request to the MCP session
+    manager. Kept as an explicit class (mirroring the pattern FastMCP
+    itself uses internally) rather than a bare function, since Starlette's
+    Route needs a real 3-arg ASGI callable, not a typical request handler.
+    """
+
+    def __init__(self, session_manager: StreamableHTTPSessionManager) -> None:
+        self.session_manager = session_manager
+
+    async def __call__(self, scope, receive, send) -> None:
+        await self.session_manager.handle_request(scope, receive, send)
+
+
 def _load_servers_config() -> dict:
     with open(SERVERS_CONFIG_PATH) as f:
         return yaml.safe_load(f)
+
 
 async def main(config: dict) -> None:
     init_db()
@@ -174,21 +198,31 @@ async def main(config: dict) -> None:
 
     async with AsyncExitStack() as stack:
         for server_cfg in config["servers"]:
-            script_path = (SERVERS_CONFIG_PATH.parent /server_cfg["script"]).resolve()
-            params = StdioServerParameters(command=sys.executable, args=[str(script_path)], env=dict(os.environ))
-            read, write = await stack.enter_async_context(stdio_client(params))
+            url = server_cfg["url"]
+            read, write, _get_session_id = await stack.enter_async_context(
+                streamablehttp_client(url)
+            )
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
             _upstreams[server_cfg["name"]] = session
-            print(f"[watchtower] connected to upstream '{server_cfg['name']}'", file=sys.stderr)
+            print(f"[watchtower] connected to upstream '{server_cfg['name']}' at {url}", file=sys.stderr)
 
-        async with stdio_server() as (proxy_read, proxy_write):
-            await proxy.run(
-                proxy_read,
-                proxy_write,
-                proxy.create_initialization_options(),
-            )
+        session_manager = StreamableHTTPSessionManager(app=proxy, stateless=False)
+        mcp_asgi_app = _MCPASGIApp(session_manager)
+
+        starlette_app = Starlette(
+            routes=[Route("/mcp", endpoint=mcp_asgi_app)],
+            lifespan=lambda app: session_manager.run(),
+        )
+
+        host = os.environ.get("HOST", "127.0.0.1")
+        port = int(os.environ.get("PORT", "8000"))
+        uvicorn_config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
+        uv_server = uvicorn.Server(uvicorn_config)
+        print(f"[watchtower] proxy listening on http://{host}:{port}/mcp", file=sys.stderr)
+        await uv_server.serve()
+
 
 if __name__ == "__main__":
-    config = _load_servers_config()
-    anyio.run(main, config)
+    server_config = _load_servers_config()
+    anyio.run(main, server_config)
