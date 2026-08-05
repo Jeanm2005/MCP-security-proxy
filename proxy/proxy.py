@@ -1,17 +1,6 @@
-"""
-Watchtower proxy -- multi-server aggregator.
-
-Connects to multiple upstream MCP servers (defined in server.yaml),
-merges their tools into one list (prefixed as "servername__toolname" to
-avoid collisions), and routes each call to the right backend. Every call
-from every server funnels through this one process, which is what makes
-cross-server cascade detection possible.
-"""
-
 import asyncio
 import os
 import sys
-from contextlib import AsyncExitStack
 from pathlib import Path
 
 import anyio
@@ -19,8 +8,7 @@ import uvicorn
 import yaml
 from cascade import check_for_cascade, record_output
 from detectors import scan_text
-from mcp import ClientSession, types
-from mcp.client.streamable_http import streamablehttp_client
+from mcp import types
 from mcp.server.lowlevel import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from policy import get_action, load_policy
@@ -37,13 +25,16 @@ from storage import (
     log_description_findings,
     set_approval_decision,
 )
+from upstream_connection import UpstreamConnection
 
 SERVERS_CONFIG_PATH = Path(__file__).parent / "servers.yaml"
 PREFIX_SEP = "__"
 
 proxy = Server("mcp-watchtower-proxy")
 
-_upstreams: dict[str, ClientSession] = {}
+# server_name -> UpstreamConnection (each manages its own reconnect logic)
+_upstreams: dict[str, UpstreamConnection] = {}
+# prefixed_tool_name -> (server_name, original_tool_name)
 _tool_routes: dict[str, tuple[str, str]] = {}
 _policy: dict = {}
 
@@ -68,8 +59,8 @@ async def handle_list_tools() -> list[types.Tool]:
     merged: list[types.Tool] = []
     _tool_routes.clear()
 
-    for server_name, session in _upstreams.items():
-        result = await session.list_tools()
+    for server_name, conn in _upstreams.items():
+        result = await conn.call(lambda s: s.list_tools())
         for tool in result.tools:
             prefixed_name = f"{server_name}{PREFIX_SEP}{tool.name}"
             description = tool.description or ""
@@ -120,6 +111,9 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
 
     server_name, original_name = _tool_routes[name]
 
+    # Policy is matched on the ORIGINAL (unprefixed) tool name, so existing
+    # policy.yaml rules keep working unchanged regardless of which server
+    # a tool happens to live on.
     action, reason = get_action(original_name, _policy)
 
     if action == "deny":
@@ -150,8 +144,8 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
             cascade["dest_server"], cascade["dest_tool"], cascade["matched_value"],
         )
 
-    session = _upstreams[server_name]
-    result = await session.call_tool(original_name, arguments)
+    conn = _upstreams[server_name]
+    result = await conn.call(lambda s: s.call_tool(original_name, arguments))
 
     response_text = "\n".join(
         block.text for block in result.content if isinstance(block, types.TextContent)
@@ -196,32 +190,30 @@ async def main(config: dict) -> None:
     global _policy
     _policy = load_policy()
 
-    async with AsyncExitStack() as stack:
-        for server_cfg in config["servers"]:
-            url = server_cfg["url"]
-            read, write, _get_session_id = await stack.enter_async_context(
-                streamablehttp_client(url)
-            )
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            _upstreams[server_cfg["name"]] = session
-            print(f"[watchtower] connected to upstream '{server_cfg['name']}' at {url}", file=sys.stderr)
+    for server_cfg in config["servers"]:
+        conn = UpstreamConnection(server_cfg["name"], server_cfg["url"])
+        _upstreams[server_cfg["name"]] = conn
 
-        session_manager = StreamableHTTPSessionManager(app=proxy, stateless=False)
-        mcp_asgi_app = _MCPASGIApp(session_manager)
+    session_manager = StreamableHTTPSessionManager(app=proxy, stateless=False)
+    mcp_asgi_app = _MCPASGIApp(session_manager)
 
-        starlette_app = Starlette(
-            routes=[Route("/mcp", endpoint=mcp_asgi_app)],
-            lifespan=lambda app: session_manager.run(),
-        )
+    starlette_app = Starlette(
+        routes=[Route("/mcp", endpoint=mcp_asgi_app)],
+        lifespan=lambda app: session_manager.run(),
+    )
 
-        host = os.environ.get("HOST", "127.0.0.1")
-        port = int(os.environ.get("PORT", "8000"))
-        uvicorn_config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
-        uv_server = uvicorn.Server(uvicorn_config)
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn_config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
+    uv_server = uvicorn.Server(uvicorn_config)
+
+    async with anyio.create_task_group() as tg:
+        for conn in _upstreams.values():
+            tg.start_soon(conn.run_supervisor)
+
         print(f"[watchtower] proxy listening on http://{host}:{port}/mcp", file=sys.stderr)
         await uv_server.serve()
-
+        tg.cancel_scope.cancel()
 
 if __name__ == "__main__":
     server_config = _load_servers_config()
