@@ -27,7 +27,7 @@ from storage import (
 )
 from upstream_connection import UpstreamConnection
 
-SERVERS_CONFIG_PATH = Path(__file__).parent / "servers.yaml"
+SERVERS_CONFIG_PATH = Path(os.environ.get("WATCHTOWER_SERVERS_CONFIG", str(Path(__file__).parent / "servers.yaml")))
 PREFIX_SEP = "__"
 
 proxy = Server("mcp-watchtower-proxy")
