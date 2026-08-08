@@ -18,13 +18,13 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
-DB_PATH = REPO_ROOT / "proxy" / "watchtower.db"
+LOCAL_DB_PATH = REPO_ROOT / "proxy" / "watchtower.db"
+DOCKER_DB_COPY_PATH = REPO_ROOT / "docker_watchtower.db"
 
-SCENARIOS = [
-    ("Static tool poisoning + rug-pull + runtime injection", "tests/test_proxy_e2e.py"),
-    ("Rug-pull via schema/description change across reconnects", "tests/test_rugpull_schema.py"),
-    ("Multi-server routing (plumbing sanity check)", "tests/test_multi_server_routing.py"),
-    ("Cross-server cascade exfiltration", "tests/test_cascade.py"),
+SELF_CONTAINED_SCENARIOS = [
+    ("Lab target sanity check", "tests/smoke_test.py"),
+    ("Static poisoning + policy + runtime injection", "tests/test_proxy_e2e.py"),
+    ("Rug-pull via schema change + reconnect", "tests/test_rugpull_schema.py"),
 ]
 
 def run_scenario(label: str, script: str) -> bool:
@@ -41,80 +41,119 @@ def run_scenario(label: str, script: str) -> bool:
         check=False,
     )
     ok = result.returncode == 0
-    status = "OK" if ok else "FAILED (nonzero exit)"
-    print(f" {status}")
+    print(f" {'OK' if ok else 'FAILED (nonzero exit)'}")
     if not ok:
         print(result.stdout[-2000:])
         print(result.stderr[-2000:])
     print()
     return ok
 
-def verify_detections() -> list[str]:
-    """Independently checks the DB for evidence each detector actually
-    fired at least once. Returns a list of failure messages (empty = all good).
+def run_docker_scenario() -> bool:
+    print("--- Running: Full Docker Compose stack (cross-server cascade detection) ---")
 
-    Retries a few times with a short sleep: on fast machines the very last
-    scenario's subprocess can exit a beat before its SQLite write is fully
-    visible to a fresh connection opened immediately after. A brief retry
-    absorbs that without masking a genuine detection failure -- if it's
-    still missing after several attempts, it's reported as a real failure.
-    """
-    for attempt in range(5):
-        conn = sqlite3.connect(DB_PATH)
+    def run(cmd, **kwargs):
+        return subprocess.run(cmd, cwd=(REPO_ROOT), check=False, **kwargs)
 
-        flagged_calls = conn.execute("SELECT COUNT(*) FROM calls WHERE flags IS NOT NULL").fetchone()[0]
-        desc_findings = conn.execute("SELECT COUNT(*) FROM description_findings").fetchone()[0]
-        rug_pulls = conn.execute("SELECT COUNT(*) FROM tool_fingerprints WHERE last_flag = 'rug_pull'").fetchone()[0]
-        cascade_findings = conn.execute("SELECT COUNT(*) FROM cascade_findings").fetchone()[0]
-        conn.close()
+    run(["docker", "compose", "up", "--build", "-d"])
 
-        failures = []
-        if flagged_calls == 0:
-            failures.append("no flagged calls found -- runtime response injection detection may be broken")
-        if desc_findings == 0:
-            failures.append("no description findings found -- static tool poisoning detection may be broken")
-        if rug_pulls == 0:
-            failures.append("no rug-pull detections found -- fingerprint-diff detection may be broken")
-        if cascade_findings == 0:
-            failures.append("no cascade findings found -- cross-server cascade detection may be broken")
+    print(" waiting for proxy to be reachable...")
+    up = False
+    for _ in range(30):
+        result = run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000/mcp"],
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout.strip():
+            up = True
+            break
+        time.sleep(1)
 
-        if not failures:
-            print(
-                f"Detection summary: {flagged_calls} flagged calls, {desc_findings} description "
-                f"findings, {rug_pulls} rug pulls, {cascade_findings} cascade findings -- all present.\n"
-            )
-            return []
+    if not up:
+        print(" FAILED: proxy never became reachable")
+        run(["docker", "compose", "logs", "proxy"])
+        run(["docker", "compose", "down", "-v"])
+        return False
 
-        if attempt < 4:
-            print(f"[retry {attempt + 1}/5] some detections not yet visible, waiting 1s and rechecking...")
-            time.sleep(1)
+    test_result = run(
+        [sys.executable, "tests/test_docker_stack.py"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    ok = test_result.returncode == 0
+    print(f" {'OK' if ok else 'FAILED (nonzero exit)'}")
+    if not ok:
+        print(test_result.stdout[-2000:])
+        print(test_result.stderr[-2000:])
 
+    DOCKER_DB_COPY_PATH.unlink(missing_ok=True)
+    run(["docker", "compose", "cp", "proxy:/app/data/watchtower.db", str(DOCKER_DB_COPY_PATH)])
+    run(["docker", "compose", "logs", "proxy"])
+    run(["docker", "compose", "down"])
+
+    print()
+    return ok
+
+def verify_counts(db_path: Path, checks: dict) -> list:
+    if not db_path.exists():
+        return [f"expected database at {db_path}, but it doesn't exist"]
+
+    failures = []
+    conn = sqlite3.connect(db_path)
+    for message, query in checks.items():
+        count = conn.execute(query).fetchone()[0]
+        if count == 0:
+            failures.append(message)
+    conn.close()
     return failures
-            
+
 def main() -> None:
-    DB_PATH.unlink(missing_ok=True)
+    LOCAL_DB_PATH.unlink(missing_ok=True)
 
-    scenario_results = [run_scenario(label, script) for label, script in SCENARIOS]
-    scenarios_ok = all(scenario_results)
+    scenario_results = [run_scenario(label, script) for label, script in SELF_CONTAINED_SCENARIOS]
+    docker_ok = run_docker_scenario()
 
-    print("=== Verifying detections against the database ===")
-    detection_failures = verify_detections()
+    print("=== Verifying self-contained detections against the database ===")
+    self_contained_failures = verify_counts(
+        LOCAL_DB_PATH,
+        {
+            "no flagged calls found -- runtime response injection detection may be broken":
+                "SELECT COUNT(*) FROM calls WHERE flags IS NOT NULL",
+            "no description findings found -- static tool poisoning detection may be broken":
+                "SELECT COUNT(*) FROM description_findings",
+            "no rug-pull detections found -- fingerprint-diff detection may be broken":
+                "SELECT COUNT(*) FROM tool_fingerprints WHERE last_flag = 'rug_pull'",
+        },
+    )
+
+    print("=== Verifying Docker-stack cascade detection against the database ===")
+    docker_failures = verify_counts(
+        DOCKER_DB_COPY_PATH,
+        {
+            "no cascade findings found -- cross-server cascade detection may be broken":
+                "SELECT COUNT(*) FROM cascade_findings",
+        },
+    )
 
     print("=== SUMMARY ===")
-    for (label, _), ok in zip(SCENARIOS, scenario_results):
-        print(f" [{'PASS' if ok else 'FAIL'}] {label}")
+    for (label, _), ok in zip(SELF_CONTAINED_SCENARIOS, scenario_results):
+        print(f"  [{'PASS' if ok else 'FAIL'}] {label}")
+    print(f"  [{'PASS' if docker_ok else 'FAIL'}] Full Docker Compose stack")
 
-    if detection_failures:
+    all_failures = self_contained_failures + docker_failures
+    if all_failures:
         print("\nDetection verification FAILED:")
-        for f in detection_failures:
-            print(f" - {f}")
+        for f in all_failures:
+            print(f"  - {f}")
 
-    if scenarios_ok and not detection_failures:
+    if all(scenario_results) and docker_ok and not all_failures:
         print("\nALL CHECKS PASSED")
         sys.exit(0)
     else:
         print("\nATTACK SIMULATION FAILED -- see above")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
