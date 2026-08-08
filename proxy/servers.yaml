@@ -4,6 +4,6 @@
 # project.
 servers:
   - name: filesrv
-    script: ../vulnerable-server/server.py
+    url: http://filesrv:8001/mcp
   - name: mailsrv
-    script: ../lab-server-b/mailserver.py
+    url: http://mailsrv:8002/mcp

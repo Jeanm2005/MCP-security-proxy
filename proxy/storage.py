@@ -3,14 +3,14 @@ Storage layer for Watchtower. SQLite for now -- trivially swappable for
 Postgres later since everything goes through these functions, not raw SQL
 scattered through proxy.py.
 """
-
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "watchtower.db"
+DB_PATH = Path(os.environ.get("WATCHTOWER_DB_PATH", str(Path(__file__).parent / "watchtower.db")))
 
 
 def get_conn() -> sqlite3.Connection:

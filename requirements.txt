@@ -2,3 +2,5 @@ mcp==1.28.1
 anyio>=4.0
 ruff>=0.6
 pyyaml>=6.0
+uvicorn>=0.34
+starlette>=0.40
