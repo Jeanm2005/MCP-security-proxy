@@ -1,0 +1,9 @@
+# Watchtower multi-server config. Each entry is one upstream MCP server
+# Watchtower connects to and aggregates. Scripts are resolved relative to
+# this file's own directory (proxy/), same convention as the rest of the
+# project.
+servers:
+  - name: filesrv
+    url: http://filesrv:8001/mcp
+  - name: mailsrv
+    url: http://mailsrv:8002/mcp

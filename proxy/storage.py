@@ -3,14 +3,14 @@ Storage layer for Watchtower. SQLite for now -- trivially swappable for
 Postgres later since everything goes through these functions, not raw SQL
 scattered through proxy.py.
 """
-
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "watchtower.db"
+DB_PATH = Path(os.environ.get("WATCHTOWER_DB_PATH", str(Path(__file__).parent / "watchtower.db")))
 
 
 def get_conn() -> sqlite3.Connection:
@@ -48,6 +48,26 @@ def init_db() -> None:
             description     TEXT NOT NULL,
             findings        TEXT NOT NULL,
             timestamp       REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cascade_findings (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_server   TEXT NOT NULL,
+            source_tool     TEXT NOT NULL,
+            dest_server     TEXT NOT NULL,
+            dest_tool       TEXT NOT NULL,
+            matched_value   TEXT NOT NULL,
+            timestamp       REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name       TEXT NOT NULL,
+            arguments       TEXT NOT NULL,
+            reason          TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            requested_at    TEXT NOT NULL,
+            decided_at      REAL
         );
         """
     )
@@ -139,3 +159,55 @@ def log_description_findings(tool_name: str, description: str, findings: list[di
     )
     conn.commit()
     conn.close()
+
+def log_cascade_findings(source_server, source_tool, dest_server, dest_tool, matched_value):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO cascade_findings (source_server, source_tool, dest_server, dest_tool, matched_value, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (source_server, source_tool, dest_server, dest_tool, matched_value, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+def create_pending_approval(tool_name: str, arguments: dict, reason: dict) -> int:
+    """Creates a pending approval row and returns its id."""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO pending_approvals (tool_name, arguments, reason, status, requested_at) "
+        "VALUES (?, ?, ?, 'pending', ?)",
+        (tool_name, json.dumps(arguments), reason, time.time()),
+    )
+    conn.commit()
+    approval_id = cur.lastrowid
+    conn.close()
+    return approval_id
+
+def get_approval_status(approval_id: int) -> str:
+    """Returns 'pending', 'approved', or 'denied'."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT status FROM pending_approvals WHERE id = ?", (approval_id,)
+    ).fetchone()
+    conn.close()
+    return row["status"] if row else "denied"
+
+def set_approval_decision(approval_id: int, decision: str) -> None:
+    """Decision must be 'approved' or 'denied'."""
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE pending_approvals SET status = ?, decided_at = ? WHERE id = ?",
+        (decision, time.time(), approval_id),
+    )
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
+
+def list_pending_approvals() -> list[sqlite3.Row]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM pending_approvals WHERE status = 'pending' ORDER BY requested_at"
+    ).fetchall()
+    conn.close()
+    return rows
