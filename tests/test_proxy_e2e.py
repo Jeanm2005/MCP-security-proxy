@@ -94,11 +94,12 @@ async def main():
 
     finally:
         for proc in (proxy_proc, filesrv_proc):
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except TimeoutError:
-                proc.kill()
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except TimeoutError:
+                    proc.kill()
 
         proxy_output = (await proxy_proc.stdout.read()).decode(errors="replace") if proxy_proc.stdout else ""
         print("\n=== proxy output ===")

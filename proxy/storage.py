@@ -69,6 +69,22 @@ def init_db() -> None:
             requested_at    TEXT NOT NULL,
             decided_at      REAL
         );
+
+        CREATE TABLE IF NOT EXISTS policy_overrides (
+            tool_name       TEXT PRIMARY KEY,
+            action          TEXT NOT NULL,
+            reason          TEXT NOT NULL,
+            added_by        TEXT NOT NULL,
+            created_at      REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS blue_agent_decisions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name       TEXT NOT NULL,
+            decision        TEXT NOT NULL,
+            reasoning       TEXT NOT NULL,
+            timestamp       REAL NOT NULL
+        );
         """
     )
     conn.commit()
@@ -211,3 +227,75 @@ def list_pending_approvals() -> list[sqlite3.Row]:
     ).fetchall()
     conn.close()
     return rows
+
+def set_policy_override(tool_name: str, action: str, reason: str, added_by: str = "blue-agent") -> None:
+    """Insert or update a runtime policy override. This is checked before
+    policy.yaml, so the blue agent (or a human, via tools/) can tighten or
+    loosen policy live without editing/redeploying the static config."""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO policy_overrides (tool_name, action, reason, added_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(tool_name) DO UPDATE SET action=excluded.action, reason=excluded.reason, "
+        "added_by=excluded.added_by, created_at=excluded.created_at",
+        (tool_name, action, reason, added_by, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+def get_policy_override(tool_name: str):
+    """Returns (action, reason) if an override exists for this tool, else None."""
+    conn = get_conn()
+    row = conn.execute("SELECT action, reason FROM policy_overrides WHERE tool_name = ?", (tool_name,)).fetchone()
+    conn.close()
+    return (row["action"], row["reason"]) if row else None
+
+def list_policy_overrides():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM policy_overrides ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return rows
+
+def clear_policy_overrides(tool_name: str) -> bool:
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM policy_overrides WHERE tool_name = ?", (tool_name,))
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
+
+def log_blue_agent_decision(tool_name: str, decision: str, reasoning: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO blue_agent_decisions (tool_name, decision, reasoning, timestamp) VALUES (?, ?, ?, ?)",
+        (tool_name, decision, reasoning, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+def get_recent_findings(since_timestamp: float):
+    """Everything the blue agent needs to reason about: flagged calls,
+    description findings, rug pulls, and cascade findings since a given time."""
+    conn = get_conn()
+    findings = {
+        "flagged_calls": conn.execute(
+            "SELECT tool_name, arguments, response_text, flags, timestamp FROM calls "
+            "WHERE flags IS NOT NULL AND timestamp > ? ORDER BY timestamp",
+            (since_timestamp,),
+        ).fetchall(),
+        "description_findings": conn.execute(
+            "SELECT tool_name, findings, timestamp FROM description_findings WHERE timestamp > ? ORDER BY timestamp",
+            (since_timestamp,),
+        ).fetchall(),
+        "rug_pulls": conn.execute(
+            "SELECT tool_name, last_seen FROM tool_fingerprints WHERE last_flag = 'rug_pull' AND last_seen > ?",
+            (since_timestamp,),
+        ).fetchall(),
+        "cascade_findings": conn.execute(
+            "SELECT source_server, source_tool, dest_server, dest_tool, matched_value, timestamp "
+            "FROM cascade_findings WHERE timestamp > ? ORDER BY timestamp",
+            (since_timestamp,),
+        ).fetchall(),
+    }
+    conn.close()
+    return findings
