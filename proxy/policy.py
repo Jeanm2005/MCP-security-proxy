@@ -6,7 +6,6 @@ call before it's forwarded to the real server.
 from pathlib import Path
 
 import yaml
-
 from storage import get_policy_override
 
 POLICY_PATH = Path(__file__).parent / "policy.yaml"
