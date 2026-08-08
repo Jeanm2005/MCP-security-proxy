@@ -1,25 +1,23 @@
 """
-Watchtower Lab Target B: "internal mail server" MCP server.
-
-Paired with vulnerable-server/server.py (which plays the role of a "file
-server" with a secret-returning tool) to give us a cross-server
-boundary to test cascade detection against: something reads a secret from
-one server, something else sends it out via a completely different server.
-
-Nothing here is malicious on its own. The risk only exists in the combination:
-secret-from-server-A landing in the body of a call to server-B.
+Watchtower Lab Target B: a simple "internal mail server" MCP server.
+Runs over streamable-http so it can live in its own container,
+independently of the proxy and filesrv.
 """
+
+import os
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("watchtower-labl-target-b")
+mcp = FastMCP(
+    "watchtower-lab-target-b",
+    host=os.environ.get("HOST", "127.0.0.1"),
+    port=int(os.environ.get("PORT", "8002")),
+)
 
 @mcp.tool()
 def send_email(to: str, subject: str, body: str) -> str:
-    """
-    Send an email to the given address with the given subject and body.
-    """
-    return f"Email sent to {to} (subject: {subject!r}, {len(body)} chars in body)."
+    """Send an email on behalf of the user."""
+    return f"Email sent to {to} (subejct: {subject!r}, {len(body)} chars in body)."
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="streamable-http")

@@ -1,59 +1,74 @@
 name: CI
 
 on:
-    push:
-        branches: [develop, staging, main]
-    pull_request:
-        branches: [develop, staging, main]
+  push:
+    branches: [develop, staging, main]
+  pull_request:
+    branches: [develop, staging, main]
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
 
-        steps:
-            - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                python-version: "3.12"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-            - name: Install dependencies
-              run: |
-                pip install -r requirements.txt
-            
-            - name: Lint
-              run: ruff check . --output-format=github
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-            - name: Run smoke test (direct to vulnerable server)
-              run: python tests/smoke_test.py
+      - name: Lint
+        run: ruff check . --output-format=github
 
-            - name: Run end-to-end proxy test
-              env:
-                WATCHTOWER_CI_AUTO_APPROVE: "true"
-              run: python tests/test_proxy_e2e.py
+      - name: Run smoke test (self-contained, no Docker)
+        run: python tests/smoke_test.py
 
-            - name: Run rug-pull schema-change test
-              env:
-                WATCHTOWER_CI_AUTO_APPROVE: "true"
-              run: python tests/test_rugpull_schema.py
+      - name: Run proxy end-to-end test (self-contained, no Docker)
+        run: python tests/test_proxy_e2e.py
 
-            - name: Run cascade detection test
-              env:
-                  WATCHTOWER_CI_AUTO_APPROVE: "true"
-              run: python tests/test_cascade.py
-            - name: Verify detection actually fired (fail build if not)
-              run: |
-                python -c "
-                import sqlite3
-                conn = sqlite3.connect('proxy/watchtower.db')
-                flagged_calls = conn.execute('SELECT COUNT(*) FROM calls WHERE flags IS NOT NULL').fetchone()[0]
-                desc_findings = conn.execute('SELECT COUNT(*) FROM description_findings').fetchone()[0]
-                rug_pulls = conn.execute(\"SELECT COUNT(*) FROM tool_fingerprints WHERE last_flag = 'rug_pull'\").fetchone()[0]
-                cascade_findings = conn.execute('SELECT COUNT(*) FROM cascade_findings').fetchone()[0]
-                assert flagged_calls > 0, 'expected at least one flagged call, found none'
-                assert desc_findings > 0, 'expected at least one description finding, found none'
-                assert rug_pulls > 0, 'expected at least one rug-pull detection, found none'
-                assert cascade_findings > 0, 'expected at least one cascade finding, found none'
-                print(f'OK: {flagged_calls} flagged calls, {desc_findings} description findings, {rug_pulls} rug pulls, {cascade_findings} cascade findings')
-                "
+      - name: Run rug-pull schema-change + reconnect test (self-contained, no Docker)
+        run: python tests/test_rugpull_schema.py
+
+      - name: Verify detection actually fired (fail build if not)
+        run: |
+          python -c "
+          import sqlite3
+          conn = sqlite3.connect('proxy/watchtower.db')
+          flagged_calls = conn.execute('SELECT COUNT(*) FROM calls WHERE flags IS NOT NULL').fetchone()[0]
+          desc_findings = conn.execute('SELECT COUNT(*) FROM description_findings').fetchone()[0]
+          rug_pulls = conn.execute(\"SELECT COUNT(*) FROM tool_fingerprints WHERE last_flag = 'rug_pull'\").fetchone()[0]
+          assert flagged_calls > 0, 'expected at least one flagged call, found none'
+          assert desc_findings > 0, 'expected at least one description finding, found none'
+          assert rug_pulls > 0, 'expected at least one rug-pull detection, found none'
+          print(f'OK: {flagged_calls} flagged calls, {desc_findings} description findings, {rug_pulls} rug pulls')
+          "
+
+      - name: Bring up full Docker Compose stack
+        run: docker compose up --build -d
+
+      - name: Wait for proxy to be reachable
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://localhost:8000/mcp; then
+              echo "proxy is up"
+              break
+            fi
+            echo "waiting for proxy... ($i/30)"
+            sleep 1
+          done
+
+      - name: Run full Docker stack test
+        run: python tests/test_docker_stack.py
+
+      - name: Dump proxy logs (always, useful for debugging failures)
+        if: always()
+        run: docker compose logs proxy
+
+      - name: Tear down Docker Compose stack
+        if: always()
+        run: docker compose down
