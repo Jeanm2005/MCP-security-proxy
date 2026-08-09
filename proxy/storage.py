@@ -86,9 +86,29 @@ def init_db() -> None:
             timestamp       REAL NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS blue_agent_state(
+        CREATE TABLE IF NOT EXISTS blue_agent_state (
             key             TEXT PRIMARY KEY,
             value           TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS red_agent_runs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal            TEXT NOT NULL,
+            outcome         TEXT,
+            summary         TEXT,
+            started_at      REAL NOT NULL,
+            ended_at        REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS red_agent_steps (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id          INTEGER NOT NULL,
+            step_number     INTEGER NOT NULL,
+            tool_called     TEXT,
+            arguments       TEXT,
+            result          TEXT,
+            blocked         INTEGER NOT NULL DEFAULT 0,
+            timestamp       REAL NOT NULL
         );
         """
     )
@@ -322,3 +342,27 @@ def set_blue_agent_last_run(timestamp: float) -> None:
     )
     conn.commit()
     conn.close()
+
+def create_red_agent_run(goal: str) -> int:
+    conn = get_conn()
+    cur = conn.execute("INSERT INTO red_agent_runs (goal, started_at) VALUES (?, ?)", (goal, time.time()))
+    conn.commit()
+    run_id = cur.lastrowid
+    conn.close()
+    return run_id
+
+def log_red_agent_step(run_id: int, step_number: int, tool_called: str, arguments: dict, result: str, blocked: bool) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO red_agent_steps (run_id, step_number, tool_called, arguments, result, blocked, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, step_number, tool_called, json.dumps(arguments), result, int(blocked), time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+def finish_red_agent_run(run_id, outcome, summary):
+    conn = get_conn()
+    conn.execute("UPDATE red_agent_runs SET outcome = ?, summary = ?, ended_at = ? WHERE id = ?",
+                 (outcome, summary, time.time(), run_id))
+    conn.commit(); conn.close()
