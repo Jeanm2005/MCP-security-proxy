@@ -85,6 +85,11 @@ def init_db() -> None:
             reasoning       TEXT NOT NULL,
             timestamp       REAL NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS blue_agent_state(
+            key             TEXT PRIMARY KEY,
+            value           TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -299,3 +304,21 @@ def get_recent_findings(since_timestamp: float):
     }
     conn.close()
     return findings
+
+def get_blue_agent_last_run() -> float:
+    """Returns the timestamp of the blue agent's last completed pass, or
+    0.0 if it's never run."""
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM blue_agent_state WHERE key = 'last_run'").fetchone()
+    conn.close()
+    return float(row["value"]) if row else 0.0
+
+def set_blue_agent_last_run(timestamp: float) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO blue_agent_state (key, value) VALUES ('last_run', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(timestamp),),
+    )
+    conn.commit()
+    conn.close()
