@@ -1,23 +1,24 @@
 """
 Blue agent: the autonomous defender half of the red/blue pair.
 
-Each run: reads everything Watchtower has flagged since the last run
-(flagged calls, description findings, rug pulls, cascade findings),
-asks an LLM to reason about whether any tool's recent behavior warrants
-tightening policy, and -- if so -- writes a policy override that the
-proxy checks on the very next call. Every decision (including "no action
-needed") is logged to blue_agent_decisions for a full audit trail.
+Talks to the proxy ONLY over HTTP, via its admin API -- never touches the
+database or filesystem directly. This is deliberate: it means the blue
+agent works identically whether it's running on the same machine as the
+proxy, in a different container, or eventually a different pod entirely.
+No shared-filesystem assumption anywhere.
 
-This is the literal-match, reactive half of the defender. The planned
-aggregation-inference work (see RESEARCH.md) is a separate, experimental
-extension layered on top of this later -- this script is the reliable
-baseline that has to work first.
+Each run: reads everything Watchtower has flagged since the last run,
+asks an LLM to reason about whether any tool's recent behavior warrants
+tightening policy, and -- if so -- posts a policy override that the proxy
+checks on the very next call. Every decision (including "no action
+needed") is logged via the admin API for a full audit trail.
 
 Requires ANTHROPIC_API_KEY in the environment.
 
 Usage:
-    python agents/blue/blue_agent.py             # single pass
-    python agents/blue/blue_agent.py --loop 60    # repeat every 60s
+    python agents/blue/blue_agent.py                          # single pass
+    python agents/blue/blue_agent.py --loop 60                # repeat every 60s
+    python agents/blue/blue_agent.py --proxy-url http://...   # non-default proxy location
 """
 
 import argparse
@@ -25,21 +26,11 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 
 import anthropic
+import httpx
 
-REPO_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(REPO_ROOT / "proxy"))
-
-from storage import (
-    get_blue_agent_last_run,
-    get_recent_findings,
-    log_blue_agent_decision,
-    set_blue_agent_last_run,
-    set_policy_override,
-)
-
+DEFAULT_PROXY_URL = os.environ.get("WATCHTOWER_PROXY_URL", "http://127.0.0.1:8000")
 MODEL = os.environ.get("WATCHTOWER_BLUE_AGENT_MODEL", "claude-haiku-4-5-20251001")
 
 SYSTEM_PROMPT = """You are the blue-team defender for an MCP security gateway called \
@@ -59,6 +50,7 @@ Respond ONLY with a JSON array, one object per tool that has findings, each with
 Be conservative: only recommend "deny" for clear, severe, repeated malicious \
 patterns. A single ambiguous finding should usually be "no_action" or, at most, \
 "require_approval"."""
+
 
 def summarize_findings(findings: dict) -> str:
     lines = []
@@ -88,17 +80,29 @@ def summarize_findings(findings: dict) -> str:
 
     return "\n".join(lines) if lines else ""
 
-def run_once(client: anthropic.Anthropic) -> int:
+
+def strip_markdown_fence(text: str) -> str:
+    """Models often wrap JSON in a markdown code fence even when told not
+    to -- strip it before parsing rather than fighting the model further."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        text = text.removeprefix("json")
+        text = text.strip()
+    return text
+
+
+def run_once(client: anthropic.Anthropic, http: httpx.Client, proxy_url: str) -> int:
     """Returns the number of policy overrides applied this run."""
-    last_run = get_blue_agent_last_run()
+    last_run = http.get(f"{proxy_url}/admin/blue-agent/last-run").json()["last_run"]
     now = time.time()
 
-    findings = get_recent_findings(last_run)
+    findings = http.get(f"{proxy_url}/admin/findings", params={"since": last_run}).json()
     summary = summarize_findings(findings)
 
     if not summary:
         print("[blue-agent] no new findings since last run -- nothing to review")
-        set_blue_agent_last_run(now)
+        http.post(f"{proxy_url}/admin/blue-agent/last-run", json={"timestamp": now})
         return 0
 
     print(f"[blue-agent] reviewing findings since {last_run:.0f}:\n{summary}\n")
@@ -109,12 +113,7 @@ def run_once(client: anthropic.Anthropic) -> int:
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": summary}],
     )
-    raw_text = response.content[0].text.strip()
-
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("```")[1]
-        raw_text = raw_text.removeprefix("json")
-        raw_text = raw_text.strip()
+    raw_text = strip_markdown_fence(response.content[0].text)
 
     try:
         decisions = json.loads(raw_text)
@@ -132,18 +131,27 @@ def run_once(client: anthropic.Anthropic) -> int:
             print(f"[blue-agent] skipping malformed decision: {item}")
             continue
 
-        log_blue_agent_decision(tool_name, decision, reasoning)
+        http.post(
+            f"{proxy_url}/admin/blue-agent/decisions",
+            json={"tool_name": tool_name, "decision": decision, "reasoning": reasoning},
+        )
         print(f"[blue-agent] {tool_name}: {decision} -- {reasoning}")
 
         if decision != "no_action":
-            set_policy_override(tool_name, decision, reasoning, added_by="blue-agent")
+            http.post(
+                f"{proxy_url}/admin/policy-overrides",
+                json={"tool_name": tool_name, "action": decision, "reason": reasoning, "added_by": "blue-agent"},
+            )
+            overrides_applied += 1
 
-    set_blue_agent_last_run(now)
+    http.post(f"{proxy_url}/admin/blue-agent/last-run", json={"timestamp": now})
     return overrides_applied
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--loop", type=int, default=None, help="repeat every N seconds instead of running once")
+    parser.add_argument("--proxy-url", default=DEFAULT_PROXY_URL, help="base URL of the proxy's admin API")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -153,13 +161,15 @@ def main() -> None:
 
     client = anthropic.Anthropic(api_key=api_key)
 
-    if args.loop:
-        print(f"[blue-agent] running every {args.loop}s (Ctrl+C to stop)")
-        while True:
-            run_once(client)
-            time.sleep(args.loop)
-    else:
-        run_once(client)
+    with httpx.Client(timeout=30) as http:
+        if args.loop:
+            print(f"[blue-agent] running every {args.loop}s against {args.proxy_url} (Ctrl+C to stop)")
+            while True:
+                run_once(client, http, args.proxy_url)
+                time.sleep(args.loop)
+        else:
+            run_once(client, http, args.proxy_url)
+
 
 if __name__ == "__main__":
     main()
