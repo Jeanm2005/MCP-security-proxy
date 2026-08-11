@@ -54,7 +54,7 @@ def run_docker_scenario() -> bool:
     def run(cmd, **kwargs):
         return subprocess.run(cmd, cwd=(REPO_ROOT), check=False, **kwargs)
 
-    run(["docker", "compose", "up", "--build", "-d"])
+    run(["docker", "compose", "up", "--build", "-d", "proxy", "filesrv", "mailsrv"])
 
     print(" waiting for proxy to be reachable...")
     up = False
