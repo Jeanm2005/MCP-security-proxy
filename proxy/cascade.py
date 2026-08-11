@@ -15,9 +15,14 @@ import time
 from urllib.parse import unquote
 
 CASCADE_WINDOW_SECONDS = 120
-MIN_TRACKED_VALUE_LENGTH = 12  
-MIN_FRAGMENT_LEN = 5      
-COVERAGE_THRESHOLD = 0.85  
+MIN_TRACKED_VALUE_LENGTH = 12
+MIN_FRAGMENT_LEN = 5
+COVERAGE_THRESHOLD = 0.85
+
+_CREDENTIAL_LABEL_PATTERN = re.compile(
+    r"\b(api[_-]?key|token|secret|password|passwd|credential|auth|bearer)\s*[:=]\s*\S+",
+    re.IGNORECASE,
+)
 
 _recent_outputs: list[dict] = []
 _coverage_state: dict[tuple[str, str, str], dict] = {}
@@ -34,29 +39,25 @@ _NATO_MAP = {
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
 }
 
-
 def _args_to_text(arguments: dict) -> str:
     return " ".join(str(v) for v in arguments.values())
-
 
 def _normalize(text: str) -> str:
     return re.sub(r"[\s\-_.,;:()]+", "", text).lower()
 
-
 def _decode_nato_phonetic(text: str) -> list[str]:
     runs = re.findall(r"(?:[A-Za-z]+-)+[A-Za-z]+", text)
 
-    decoded_runs = []
+    decode_runs = []
     for run in runs:
         tokens = run.split("-")
         mapped = [_NATO_MAP.get(t.lower()) for t in tokens]
         if all(mapped):
-            decoded_runs.append("".join(mapped))
+            decode_runs.append("".join(mapped))
 
-    return decoded_runs
+    return decode_runs
 
-
-def _generate_decoded_variants(text: str) -> list[str]:
+def _generate_decoded_variants(text: str) -> list[dict]:
     variants = []
 
     url_decoded = unquote(text)
@@ -86,14 +87,12 @@ def _generate_decoded_variants(text: str) -> list[str]:
 
     return variants
 
-
 def _target_variants(value: str) -> list[str]:
     variants = [value]
-    stripped = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*\s*[:=]\s*", "", value)
+    stripped = re.sub(r"^[A-Za-z0-9_]*\s*[:=]\s*", "", value)
     if stripped != value:
         variants.append(stripped)
     return variants
-
 
 def _find_covered_ranges(target: str, haystack: str) -> list[tuple[int, int]]:
     covered = []
@@ -112,13 +111,27 @@ def _find_covered_ranges(target: str, haystack: str) -> list[tuple[int, int]]:
             i += 1
     return covered
 
+def _looks_like_natural_language(value: str) -> bool:
+    if _CREDENTIAL_LABEL_PATTERN.search(value):
+        return False
+    return len(value.split()) >= 4
+
+def _is_secret_shaped(value: str) -> bool:
+    if _CREDENTIAL_LABEL_PATTERN.search(value):
+        return True
+    if _looks_like_natural_language(value):
+        return False
+    has_digit = any(c.isdigit() for c in value)
+    has_alpha = any(c.isalpha() for c in value)
+    has_symbol = any(not c.isalnum() and not c.isspace() for c in value)
+    class_count = sum([has_digit, has_alpha, has_symbol])
+    return class_count >= 2 and len(value) >= MIN_TRACKED_VALUE_LENGTH
 
 def record_output(server_name: str, tool_name: str, response_text: str) -> None:
-    """Call this after every successful tool call, with its response."""
     now = time.time()
     _prune(now)
 
-    if len(response_text.strip()) >= MIN_TRACKED_VALUE_LENGTH:
+    if len(response_text.strip()) >= MIN_TRACKED_VALUE_LENGTH and _is_secret_shaped(response_text):
         _recent_outputs.append(
             {
                 "server": server_name,
@@ -127,7 +140,6 @@ def record_output(server_name: str, tool_name: str, response_text: str) -> None:
                 "timestamp": now,
             }
         )
-
 
 def check_for_cascade(dest_server: str, dest_tool: str, arguments: dict) -> dict | None:
     global _call_counter
@@ -142,12 +154,12 @@ def check_for_cascade(dest_server: str, dest_tool: str, arguments: dict) -> dict
 
     for record in _recent_outputs:
         if record["server"] == dest_server:
-            continue  
+            continue 
 
         for target_value in _target_variants(record["value"]):
             target_normalized = _normalize(target_value)
             if not target_normalized:
-                continue
+                continue  
 
             if any(target_normalized in t for t in single_call_normalized):
                 return _make_finding(record, dest_server, dest_tool)
@@ -167,7 +179,6 @@ def check_for_cascade(dest_server: str, dest_tool: str, arguments: dict) -> dict
                 return _make_finding(record, dest_server, dest_tool)
 
     return None
-
 
 def _make_finding(record: dict, dest_server: str, dest_tool: str) -> dict:
     return {
