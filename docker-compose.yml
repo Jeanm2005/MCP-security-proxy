@@ -40,7 +40,7 @@ services:
     command: python agents/blue/blue_agent.py --loop 60
     environment:
       PYTHONUNBUFFERED: "1"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set in your shell before running compose}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       WATCHTOWER_PROXY_URL: "http://proxy:8000"
     depends_on:
       - proxy
