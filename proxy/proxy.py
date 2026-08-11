@@ -185,7 +185,9 @@ async def admin_get_findings(request: Request) -> JSONResponse:
 
 async def admin_set_policy_override(request: Request) -> JSONResponse:
     body = await request.json()
-    set_policy_override(body["tool_name"], body["reason"], body.get["added_by", "agent"])
+    set_policy_override(
+        body["tool_name"], body["action"], body["reason"], body.get("added_by", "agent")
+    )
     return JSONResponse({"ok": True})
 
 async def admin_get_blue_agent_last_run(request: Request) -> JSONResponse:
