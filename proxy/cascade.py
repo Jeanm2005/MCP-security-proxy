@@ -92,6 +92,9 @@ def _target_variants(value: str) -> list[str]:
     stripped = re.sub(r"^[A-Za-z0-9_]*\s*[:=]\s*", "", value)
     if stripped != value:
         variants.append(stripped)
+    variants.append(value[::-1])
+    if stripped != value:
+        variants.append(stripped[::-1])
     return variants
 
 def _find_covered_ranges(target: str, haystack: str) -> list[tuple[int, int]]:
