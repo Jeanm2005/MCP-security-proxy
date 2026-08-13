@@ -16,6 +16,13 @@ spec:
         - name: proxy
           image: watchtower:latest
           imagePullPolicy: Never
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
           command: ["python", "proxy/proxy.py"]
           env:
             - name: HOST

@@ -16,6 +16,13 @@ spec:
         - name: filesrv
           image: watchtower:latest
           imagePullPolicy: Never
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
           command: ["python", "vulnerable-server/server.py"]
           env:
             - name: HOST
