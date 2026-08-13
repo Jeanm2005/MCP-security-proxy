@@ -23,9 +23,16 @@ spec:
             - name: PORT
               value: "8000"
             - name: WATCHTOWER_DB_PATH
-              value: "/tmp/watchtower.db"
+              value: "/data/watchtower.db"
           ports:
             - containerPort: 8000
+          volumeMounts:
+            - name: proxy-db
+              mountPath: /data
+      volumes:
+        - name: proxy-db
+          persistentVolumeClaim:
+            claimName: proxy-db
 ---
 apiVersion: v1
 kind: Service
