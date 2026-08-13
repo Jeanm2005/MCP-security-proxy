@@ -11,4 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY vulnerable-server/ ./vulnerable-server/
 COPY lab-server-b/ ./lab-server-b/
 COPY proxy/ ./proxy/
+RUN rm -f proxy/watchtower.db
 COPY agents/ ./agents/
