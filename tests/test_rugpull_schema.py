@@ -56,11 +56,12 @@ async def start_filesrv(variant: str):
     )
 
 async def stop_proc(proc) -> None:
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except TimeoutError:
-        proc.kill()
+    if proc.returncode is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except TimeoutError:
+            proc.kill()
 
 async def get_check_status_description(session: ClientSession) -> str:
     tools = await session.list_tools()

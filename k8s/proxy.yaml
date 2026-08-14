@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+        - name: proxy
+          image: watchtower:latest
+          imagePullPolicy: Never
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          command: ["python", "proxy/proxy.py"]
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8000"
+            - name: WATCHTOWER_DB_PATH
+              value: "/data/watchtower.db"
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: proxy-db
+              mountPath: /data
+      volumes:
+        - name: proxy-db
+          persistentVolumeClaim:
+            claimName: proxy-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+spec:
+  selector:
+    app: proxy
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: NodePort

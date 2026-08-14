@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filesrv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filesrv
+  template:
+    metadata:
+      labels:
+        app: filesrv
+    spec:
+      containers:
+        - name: filesrv
+          image: 431733408231.dkr.ecr.us-east-1.amazonaws.com/watchtower:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          command: ["python", "vulnerable-server/server.py"]
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8001"
+            - name: WATCHTOWER_VARIANT
+              value: "clean"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filesrv
+spec:
+  selector:
+    app: filesrv
+  ports:
+    - port: 8001
+      targetPort: 8001

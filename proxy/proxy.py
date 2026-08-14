@@ -14,21 +14,32 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from policy import get_action, load_policy
 from slack_notifier import send_slack_message
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 from storage import (
     check_and_update_fingerprint,
     create_pending_approval,
+    create_red_agent_run,
+    finish_red_agent_run,
     get_approval_status,
+    get_blue_agent_last_run,
+    get_recent_findings,
     init_db,
+    log_blue_agent_decision,
     log_call,
     log_cascade_findings,
     log_description_findings,
+    log_red_agent_step,
     set_approval_decision,
+    set_blue_agent_last_run,
+    set_policy_override,
 )
 from upstream_connection import UpstreamConnection
 
 SERVERS_CONFIG_PATH = Path(os.environ.get("WATCHTOWER_SERVERS_CONFIG", str(Path(__file__).parent / "servers.yaml")))
 PREFIX_SEP = "__"
+CASCADE_ACTION = os.environ.get("WATCHTOWER_CASCADE_ACTION", "deny")
 
 proxy = Server("mcp-watchtower-proxy")
 
@@ -133,16 +144,15 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
 
     cascade = check_for_cascade(server_name, original_name, arguments)
     if cascade:
-        _alert(
-            f"CASCADE ALERT: output from '{cascade['source_server']}__{cascade['source_tool']}' "
-            f"showed up as input to '{name}'. This looks like data crossing a server "
-            f"boundary it was never meant to cross.\n"
-            f"  Matched value: {cascade['matched_value']!r}"
-        )
-        log_cascade_findings(
-            cascade["source_server"], cascade["source_tool"],
-            cascade["dest_server"], cascade["dest_tool"], cascade["matched_value"],
-        )
+        _alert(f"CASCADE ALERT: output from '{cascade['source_server']}__{cascade['source_tool']}' showed up as input to '{name}'.")
+        log_cascade_findings(cascade["source_server"], cascade["source_tool"], cascade["dest_server"], cascade["dest_tool"], cascade["matched_value"])
+
+        if CASCADE_ACTION == "deny":
+            return _denied_result(
+                f"call to '{name}' blocked: its arguments contain data that recently came out of "
+                f"'{cascade['source_server']}__{cascade['source_tool']}', a different server -- this looks like "
+                f"cross-server exfiltration in progress"
+            )
 
     conn = _upstreams[server_name]
     result = await conn.call(lambda s: s.call_tool(original_name, arguments))
@@ -164,6 +174,58 @@ async def handle_call_tool(name: str, arguments: dict) -> types.CallToolResult:
 
     return result
 
+async def admin_get_findings(request: Request) -> JSONResponse:
+    """Everything an agent needs to reason about recent Watchtower activity,
+    over HTTP -- no filesystem/DB access required, works identically
+    whether the agent and proxy are on the same machine or not."""
+    since = float(request.query_params.get("since", "0"))
+    findings = get_recent_findings(since)
+    serializable = {key: [dict(row) for row in rows] for key, rows in findings.items()}
+    return JSONResponse(serializable)
+
+async def admin_set_policy_override(request: Request) -> JSONResponse:
+    body = await request.json()
+    set_policy_override(
+        body["tool_name"], body["action"], body["reason"], body.get("added_by", "agent")
+    )
+    return JSONResponse({"ok": True})
+
+async def admin_get_blue_agent_last_run(request: Request) -> JSONResponse:
+    return JSONResponse({"last_run": get_blue_agent_last_run()})
+
+
+async def admin_set_blue_agent_last_run(request: Request) -> JSONResponse:
+    body = await request.json()
+    set_blue_agent_last_run(body["timestamp"])
+    return JSONResponse({"ok": True})
+
+
+async def admin_log_blue_agent_decision(request: Request) -> JSONResponse:
+    body = await request.json()
+    log_blue_agent_decision(body["tool_name"], body["decision"], body["reasoning"])
+    return JSONResponse({"ok": True})
+
+
+async def admin_create_red_agent_run(request: Request) -> JSONResponse:
+    body = await request.json()
+    run_id = create_red_agent_run(body["goal"])
+    return JSONResponse({"run_id": run_id})
+
+
+async def admin_log_red_agent_step(request: Request) -> JSONResponse:
+    run_id = int(request.path_params["run_id"])
+    body = await request.json()
+    log_red_agent_step(
+        run_id, body["step_number"], body["tool_called"], body["arguments"], body["result"], body["blocked"]
+    )
+    return JSONResponse({"ok": True})
+
+
+async def admin_finish_red_agent_run(request: Request) -> JSONResponse:
+    run_id = int(request.path_params["run_id"])
+    body = await request.json()
+    finish_red_agent_run(run_id, body["outcome"], body["summary"])
+    return JSONResponse({"ok": True})
 
 class _MCPASGIApp:
     """Thin ASGI wrapper delegating every request to the MCP session
@@ -198,7 +260,17 @@ async def main(config: dict) -> None:
     mcp_asgi_app = _MCPASGIApp(session_manager)
 
     starlette_app = Starlette(
-        routes=[Route("/mcp", endpoint=mcp_asgi_app)],
+        routes=[
+            Route("/mcp", endpoint=mcp_asgi_app),
+            Route("/admin/findings", endpoint=admin_get_findings, methods=["GET"]),
+            Route("/admin/policy-overrides", endpoint=admin_set_policy_override, methods=["POST"]),
+            Route("/admin/blue-agent/last-run", endpoint=admin_get_blue_agent_last_run, methods=["GET"]),
+            Route("/admin/blue-agent/last-run", endpoint=admin_set_blue_agent_last_run, methods=["POST"]),
+            Route("/admin/blue-agent/decisions", endpoint=admin_log_blue_agent_decision, methods=["POST"]),
+            Route("/admin/red-agent/runs", endpoint=admin_create_red_agent_run, methods=["POST"]),
+            Route("/admin/red-agent/runs/{run_id}/steps", endpoint=admin_log_red_agent_step, methods=["POST"]),
+            Route("/admin/red-agent/runs/{run_id}/finish", endpoint=admin_finish_red_agent_run, methods=["POST"]),
+        ],
         lifespan=lambda app: session_manager.run(),
     )
 

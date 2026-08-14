@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blue-agent
+  template:
+    metadata:
+      labels:
+        app: blue-agent
+    spec:
+      containers:
+        - name: blue-agent
+          image: watchtower:latest
+          imagePullPolicy: Never
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          command: ["python", "agents/blue/blue_agent.py", "--loop", "60"]
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: WATCHTOWER_PROXY_URL
+              value: "http://proxy:8000"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: ANTHROPIC_API_KEY

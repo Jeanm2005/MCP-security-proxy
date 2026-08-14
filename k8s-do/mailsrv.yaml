@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailsrv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailsrv
+  template:
+    metadata:
+      labels:
+        app: mailsrv
+    spec:
+      containers:
+        - name: mailsrv
+          image: registry.digitalocean.com/watchtower-registry/watchtower:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          command: ["python", "lab-server-b/mailserver.py"]
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8002"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailsrv
+spec:
+  selector:
+    app: mailsrv
+  ports:
+    - port: 8002
+      targetPort: 8002
